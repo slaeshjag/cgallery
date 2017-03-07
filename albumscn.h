@@ -43,4 +43,9 @@ struct Album {
 };
 
 
+struct Album *album_crawl(const char *path, const char *fext);
+void album_locate_outdated(struct Album *a, const char *path_target, const char *fext);
+void album_locate_obsolete(struct AlbumLevel *al, const char *path_target, bool has_data);
+
+
 #endif
