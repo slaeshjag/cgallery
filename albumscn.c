@@ -206,16 +206,15 @@ void album_locate_outdated(struct Album *a, const char *path_target, const char 
 	_locate_outdated(a->root, buff, fext);
 }
 
-#if 0
-void album_locate_obsolete(struct AlbumLevel *al, const char *path_target) {
+void album_locate_obsolete(struct AlbumLevel *al, const char *path_target, bool has_data) {
 	DIR *d;
 	struct dirent dent, *result;
 	struct stat st;
-	const char* const nukable_extensions[] = { ".jpg_thumb", ".jpg_small", ".jpeg_thumb", ".jpeg_small", ".png_thumb", ".png_small", ".gif_thumb", ".gif_small", ".cgal", NULL };
+	const char* const nukable_extensions[] = { "_thumb", "_small", ".html", NULL };
 	char buff[PATH_MAX];
 	int i, j, fnl;
 
-	if (!ale)
+	if (!al)
 		return;
 	if (!(d = opendir(path_target)))
 		return;
@@ -226,20 +225,35 @@ void album_locate_obsolete(struct AlbumLevel *al, const char *path_target) {
 		if (stat(buff, &st) < 0)
 			continue;
 		if (S_ISDIR(st.st_mode)) {
-			album_locate_obsolete(al->, buff);
+			if (!has_data)
+				goto no_name;
+			for (i = 0; i < al->subalbums; i++)
+				if (!strcmp(al->subalbum[i].dirname, dent.d_name)) {
+					album_locate_obsolete(al->subalbum[i].child, buff, true);
+					goto has_name;
+				}
+		no_name:
+			album_locate_obsolete(al, buff, false);
+		has_name:
 			rmdir(buff); /* Will only succeed if the directory is empty */
 		} else {
 			fnl = strlen(dent.d_name);
-			for (i = 0; nukable_extensions[i]; i++) {
-				if (fnl < strlen(nukable_extensions[i]))
-					continue;
-				if (strcmp(dent.d_name + fnl - strlen(nukable_extensions[i]), nukable_extensions[i]))
-					continue; /* Can't touch this */
-				for (j = 0; j < ale->
-				if (strlen(nukable_extensions[i] + 	
+			for (j = 0; j < al->pictures; j++) {
+				if (has_data)
+					if (memcmp(dent.d_name, al->picture[j].fname, strlen(al->picture[j].fname)))
+						continue;
+				for (i = 0; nukable_extensions[i]; i++) {
+					if (fnl < strlen(nukable_extensions[i]))
+						continue;
+					if (strcmp(dent.d_name + fnl - strlen(nukable_extensions[i]), nukable_extensions[i]))
+						continue; /* Can't touch this */
+					if (has_data && strlen(al->picture[j].fname) + strlen(nukable_extensions[i]) != fnl)
+						continue; /* We nearly nuked the wrong file. Ask before launching! */
+					snprintf(buff, PATH_MAX, "%s/%s", path_target, dent.d_name);
+					unlink(buff);
+					break;
+				}
 			}
 		}
 	}
-
 }
-#endif
