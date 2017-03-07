@@ -15,7 +15,7 @@
 int album_add_subalbum(struct AlbumLevel *al) {
 	int id = al->subalbums++;
 	al->subalbum = realloc(al->subalbum, sizeof(*al->subalbum) * al->subalbums);
-	al->subalbum[id].variant = NULL, al->subalbum[id].variants = 0;
+	memset(&al->subalbum[id].variant, 0, sizeof(al->subalbum[id].variant));
 	return id;
 }
 
@@ -29,58 +29,37 @@ static char *_get_extension(char *fname) {
 }
 
 
-void album_locate_variants(const char *path, struct AlbumLevelEntry *ale) {
-	DIR *album;
-	struct dirent dent, *result;
-	struct stat st;
-	char *variant, buff[PATH_MAX], *tmp;
-	int v, i;
+static void _load_description(const char *path, struct AlbumLevelEntry *ale, const char *fext) {
+	char buff[PATH_MAX], *tmp;
+	int i;
 	FILE *fp;
 	off_t pos, body_len;
 
-	album = opendir(path);
-	for (readdir_r(album, &dent, &result); result; readdir_r(album, &dent, &result)) {
-		if (strstr(dent.d_name, ale->dirname) != dent.d_name)
-			continue;
-		if (!(variant = _get_extension(dent.d_name)))
-			continue;
-		snprintf(buff, PATH_MAX, "%s/%s", path, dent.d_name);
-		if (stat(buff, &st) < 0)
-			continue;
-		variant++;
-		v = ale->variants++;
-		ale->variant = realloc(ale->variant, sizeof(*ale->variant) * ale->variants);
-		ale->variant[v].last_update = st.st_mtim.tv_sec;
-		if (!(fp = fopen(buff, "r"))) {
-			ale->variants--;
-			continue;
-		}
-
-		if (fgets(buff, PATH_MAX, fp) < 0)
+	snprintf(buff, PATH_MAX, "%s/%s%s", path, ale->dirname, fext);
+	ale->variant.hidden = ale->needs_update = false;
+	ale->variant.text_body = NULL, ale->variant.title = NULL;
+	if ((fp = fopen(buff, "r"))) {
+		if (strlen(fgets(buff, PATH_MAX, fp)) < 2)
 			snprintf(buff, PATH_MAX, ale->dirname);
 		if (*buff == '|') {	/* Picture/album is hidden in this variant */
-			ale->variants--; 
-			continue;
+			ale->variant.hidden = true;
+			return;
 		}
 
-		ale->variant[v].variant = strdup(variant);
-		if (fgets(buff, PATH_MAX, fp) < 0)
-			snprintf(buff, PATH_MAX, ale->dirname);
 		if ((tmp = strchr(buff, '\n')))
 			*tmp = 0;
-		ale->variant[v].title = strdup(buff);
-		ale->variant[v].sort_value = fscanf(fp, "%i\n", &i) < 1 ? -1 : i;
+		ale->variant.title = strdup(buff);
+		ale->variant.sort_value = fscanf(fp, "%i\n", &i) < 1 ? -1 : i;
 		pos = ftell(fp);
 		fseek(fp, 0, SEEK_END);
 		body_len = ftell(fp) - pos;
 		fseek(fp, pos, SEEK_SET);
-		ale->variant[v].text_body = malloc(body_len + 1);
-		fread(ale->variant[v].text_body, body_len, 1, fp);
-		ale->variant[v].text_body[body_len] = 0;
-		ale->variant[v].needs_update = false;
-	}
-
-	closedir(album);
+		ale->variant.text_body = malloc(body_len + 1);
+		fread(ale->variant.text_body, body_len, 1, fp);
+		ale->variant.text_body[body_len] = 0;
+		ale->variant.needs_update = false;
+	} else
+		ale->variant.title = strdup(ale->dirname);
 }
 
 
@@ -99,7 +78,7 @@ static bool _is_supported_picture_type(char *fname) {
 }
 
 
-static struct AlbumLevel *_scan(const char *base_path) {
+static struct AlbumLevel *_scan(const char *base_path, const char *fext) {
 	DIR *album;
 	struct dirent dent, *result;
 	struct stat st;
@@ -115,14 +94,16 @@ static struct AlbumLevel *_scan(const char *base_path) {
 
 	for (readdir_r(album, &dent, &result); result; readdir_r(album, &dent, &result)) {
 		if (_is_supported_picture_type(dent.d_name)) {
+			if (stat(buff, &st) < 0)
+				continue;
+			if (S_ISDIR(st.st_mode))
+				continue; /* Don't be a fool, file extension isn't everything */
 			a = al->pictures++;
 			al->picture = realloc(al->picture, sizeof(*al->picture) * al->pictures);
 			al->picture[a].fname = strdup(dent.d_name);
 			snprintf(buff, PATH_MAX, "%s/%s", base_path, dent.d_name);
-			stat(buff, &st);
 			al->picture[a].last_modified = st.st_mtim.tv_sec;
-			al->picture[a].variant = NULL, al->picture[a].variants = 0;
-			album_locate_variants(base_path, (struct AlbumLevelEntry *) &al->picture[a]); /* Casting like this is a bit evil, but if we're careful, nobody gets hurt */
+			_load_description(base_path, (struct AlbumLevelEntry *) &al->picture[a], fext); /* Casting like this is a bit evil, but if we're careful, nobody gets hurt */
 			al->picture[a].needs_update = false;
 		} else {
 			if (*dent.d_name == '.')
@@ -136,8 +117,8 @@ static struct AlbumLevel *_scan(const char *base_path) {
 				continue;
 			a = album_add_subalbum(al);
 			al->subalbum[a].dirname = strdup(dent.d_name);
-			album_locate_variants(base_path, &al->subalbum[a]);
-			al->subalbum[a].child = _scan(buff);
+			_load_description(base_path, &al->subalbum[a], fext);
+			al->subalbum[a].child = _scan(buff, fext);
 			al->picture[a].needs_update = false;
 		}
 	}
@@ -150,50 +131,19 @@ static struct AlbumLevel *_scan(const char *base_path) {
 }
 
 
-struct Album *album_crawl(const char *path) {
+struct Album *album_crawl(const char *path, const char *fext) {
 	struct Album *a;
 
 
 	a = malloc(sizeof(*a));
-	a->root = _scan(path);
-	a->variant = NULL, a->variants = 0;
+	a->root = _scan(path, fext);
 	return a;
 
 }
 
 
-static void _add_variant(struct Album *a, const char *variant) {
-	int i;
-
-	for (i = 0; i < a->variants; i++)
-		if (!strcmp(a->variant[i], variant))
-			return;
-	a->variants++;
-	a->variant = realloc(a->variant, sizeof(*a->variant) * a->variants);
-	a->variant[i] = strdup(variant);
-}
-
-
-void album_identify_variants(struct Album *a, struct AlbumLevel *cur) {
-	int i, j;
-
-	if (!cur)
-		return;
-	for (i = 0; i < cur->subalbums; i++) {
-		album_identify_variants(a, cur->subalbum[i].child);
-		for (j = 0; j < cur->subalbum[i].variants; j++)
-			_add_variant(a, cur->subalbum[i].variant[j].variant);
-	}
-	
-	for (i = 0; i < cur->pictures; i++)
-		for (j = 0; j < cur->picture[i].variants; j++)
-			_add_variant(a, cur->picture[i].variant[j].variant);
-	return;
-}
-
-
 void _mark_outdated_recursive(struct AlbumLevel *al, bool thumbs) {
-	int i, j;
+	int i;
 
 	if (!al)
 		return;
@@ -206,40 +156,31 @@ void _mark_outdated_recursive(struct AlbumLevel *al, bool thumbs) {
 	for (i = 0; i < al->pictures; i++) {
 		if (thumbs)
 			al->picture[i].needs_update = true;
-		for (j = 0; j < al->picture[i].variants; j++)
-			al->picture[i].variant[j].needs_update = true;
+		al->picture[i].variant.needs_update = true;
 	}
 }
 
 
-void _locate_outdated(struct AlbumLevel *al, const char *path, const char *variant) {
+void _locate_outdated(struct AlbumLevel *al, const char *path, const char *fext) {
 	char buff[PATH_MAX];
 	struct stat st;
-	int i, j;
+	int i;
 
 	for (i = 0; i < al->subalbums; i++) {
 		snprintf(buff, PATH_MAX, "%s/%s", path, al->subalbum[i].dirname);
 		if (stat(buff, &st) < 0)
 			return _mark_outdated_recursive(al, false), _mark_outdated_recursive(al->subalbum[i].child, true);
-		_locate_outdated(al, path, variant);
+		_locate_outdated(al, path, fext);
 	}
 
 	for (i = 0; i < al->pictures; i++) {
-		snprintf(buff, PATH_MAX, "%s/%s.cgal", path, al->picture[i].fname);
-		for (j = 0; j < al->picture[i].variants; j++)
-			if (!strcmp(al->picture[i].variant[j].variant, variant))
-				break;
-		if (j == al->picture[i].variants) {
-			if (stat(buff, &st) >= 0)
-				al->picture[i].variant[j].needs_update = true;
-			goto thumbnail;
-		}
+		snprintf(buff, PATH_MAX, "%s/%s%s", path, al->picture[i].fname, fext);
 		if (stat(buff, &st) < 0) {
-			al->picture[i].variant[j].needs_update = true;
+			al->picture[i].variant.needs_update = true;
 			goto thumbnail;
 		}
-		if (al->picture[i].variant[j].last_update > st.st_mtim.tv_sec)
-			al->picture[i].variant[j].needs_update = true;
+		if (al->picture[i].variant.last_update > st.st_mtim.tv_sec)
+			al->picture[i].variant.needs_update = true;
 	thumbnail:
 		snprintf(buff, PATH_MAX, "%s/%s_thumb", path, al->picture[i].fname);
 		if (stat(buff, &st) < 0)
@@ -258,12 +199,47 @@ void _locate_outdated(struct AlbumLevel *al, const char *path, const char *varia
 }
 
 
-void album_locate_outdated(struct Album *a, const char *path_target) {
+void album_locate_outdated(struct Album *a, const char *path_target, const char *fext) {
 	char buff[PATH_MAX];
-	int i;
 
-	for (i = 0; i < a->variants; i++) {
-		snprintf(buff, PATH_MAX, "%s/%s", path_target, a->variant[i]);
-		_locate_outdated(a->root, buff, a->variant[i]);
-	}
+	snprintf(buff, PATH_MAX, "%s/%s", path_target, fext);
+	_locate_outdated(a->root, buff, fext);
 }
+
+#if 0
+void album_locate_obsolete(struct AlbumLevel *al, const char *path_target) {
+	DIR *d;
+	struct dirent dent, *result;
+	struct stat st;
+	const char* const nukable_extensions[] = { ".jpg_thumb", ".jpg_small", ".jpeg_thumb", ".jpeg_small", ".png_thumb", ".png_small", ".gif_thumb", ".gif_small", ".cgal", NULL };
+	char buff[PATH_MAX];
+	int i, j, fnl;
+
+	if (!ale)
+		return;
+	if (!(d = opendir(path_target)))
+		return;
+	for (readdir_r(d, &dent, &result); result; readdir_r(d, &dent, &result)) {
+		if (!(*dent.d_name))
+			continue;
+		snprintf(buff, PATH_MAX, "%s/%s", path_target, dent.d_name);
+		if (stat(buff, &st) < 0)
+			continue;
+		if (S_ISDIR(st.st_mode)) {
+			album_locate_obsolete(al->, buff);
+			rmdir(buff); /* Will only succeed if the directory is empty */
+		} else {
+			fnl = strlen(dent.d_name);
+			for (i = 0; nukable_extensions[i]; i++) {
+				if (fnl < strlen(nukable_extensions[i]))
+					continue;
+				if (strcmp(dent.d_name + fnl - strlen(nukable_extensions[i]), nukable_extensions[i]))
+					continue; /* Can't touch this */
+				for (j = 0; j < ale->
+				if (strlen(nukable_extensions[i] + 	
+			}
+		}
+	}
+
+}
+#endif

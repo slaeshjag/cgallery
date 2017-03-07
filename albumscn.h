@@ -5,19 +5,18 @@
 #include <stdbool.h>
 
 struct VariantDescription {
-	char				*variant;
 	char				*title;
 	char				*text_body;
 	int				sort_value;
 	time_t				last_update; // Last update is the modify-time of the metadata
 	bool				needs_update;
+	bool				hidden;
 };
 
 
 struct AlbumLevelEntry {
 	char				*dirname;
-	struct VariantDescription	*variant;
-	int				variants;
+	struct VariantDescription	variant;
 	bool				needs_update;
 	struct AlbumLevel		*child;
 };
@@ -25,11 +24,9 @@ struct AlbumLevelEntry {
 
 struct AlbumPictureEntry {
 	char				*fname;
-	struct VariantDescription	*variant;
-	int				variants;
+	struct VariantDescription	variant;
 	bool				needs_update;
 	time_t				last_modified;
-
 };
 
 
@@ -43,8 +40,6 @@ struct AlbumLevel {
 
 struct Album {
 	struct AlbumLevel		*root;
-	char				**variant;
-	char				variants;
 };
 
 
